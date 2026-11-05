@@ -69,7 +69,9 @@ That is a public address, not a secret — a browser calls it directly — which
 
 If you have already pushed these files, the workflow ran before the variable existed. Re-run it so the page picks the address up: **Actions → Build and publish the site → Run workflow**.
 
-Watch that run finish, then open `https://<your-github-username>.github.io/our-little-cinema/`. GitHub asks you once to confirm Pages for the repository; the workflow's own log links straight to it.
+Watch that run finish, then open **[https://mahin178.github.io/our-little-cinema/](https://mahin178.github.io/our-little-cinema/)**. It is already published — right now it says, in an amber note on the front door, that no room service is connected yet. That note is the site telling you the truth, and step 3 plus a re-run is what makes it disappear.
+
+Pages is switched on for this repository with "GitHub Actions" as its source; that switch is one GitHub will not let the workflow flip by itself, so on any new repository do it once under **Settings → Pages**.
 
 From now on, `git push` is the whole deploy. `Keep the room service awake` runs every hour and keeps a free Supabase project from sleeping after a quiet week.
 
