@@ -45,7 +45,11 @@ jobs:
           SUPABASE_FUNCTIONS_URL: ${{ vars.SUPABASE_FUNCTIONS_URL }}
         run: node scripts/point-service.mjs dist/config.json
 
+      # First run turns Pages on for the repository and switches its build source to
+      # "GitHub Actions"; after that it is a no-op.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
