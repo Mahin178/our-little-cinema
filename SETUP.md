@@ -96,6 +96,8 @@ Free Supabase projects hold 500 MB of database and 1 GB of files, and pause afte
 
 To change the app: edit, `npm run dev` for the local version (which runs a stand-in service on your machine, so you can test chat, uploads and voice without touching your real project), then push. Run `npm run test:flows` before pushing if you touched the backend; it exercises all 74 of these behaviours against the local stand-in.
 
+The repository is public, so anyone can read this code. Nothing private is in it: no keys, no room codes, no messages. A room only answers to its unguessable code plus the token that code's secret signs, and the page asks search engines not to list it.
+
 ## When something does not work
 
 | What you see | What it means |
