@@ -35,8 +35,16 @@ export async function serviceReachable(): Promise<boolean> {
 
 export const apiBase = () => BASE;
 
+/** The absolute address this page is calling its room service at — what a setup fix has to change. */
+function serviceAddress(): string {
+  if (BASE.startsWith('/')) {
+    return typeof window === 'undefined' ? BASE : `${window.location.origin}${BASE}`;
+  }
+  return BASE;
+}
+
 export class BackendError extends Error {
-  constructor(public code: string, public status = 0, public uncertain = false) {
+  constructor(public code: string, public status = 0, public uncertain = false, public hint = '') {
     super(code);
   }
 }
@@ -59,10 +67,21 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = 20_000):
   }
   let body: unknown;
   try { body = await response.json(); }
-  catch { throw new BackendError('invalid_response', response.status, response.ok); }
+  catch {
+    // The room service always answers in JSON. A static host's 404 page, a login wall or an
+    // empty body means this address is not the service at all — which is a setup problem, not
+    // a glitch, and the owner is the only person who can fix it. So name the address.
+    if (response.ok) throw new BackendError('invalid_response', response.status, response.ok);
+    throw new BackendError('no_service', response.status, false, serviceAddress());
+  }
   const record = (body ?? {}) as Record<string, unknown>;
   if (!response.ok) {
-    const code = typeof record.error === 'string' ? record.error : 'request_failed';
+    // Supabase's own refusals carry a `message`, not the app's `error` code, and a 401 here can
+    // only mean the gateway is demanding a login this page deliberately does not have.
+    const code = typeof record.error === 'string' ? record.error
+      : response.status === 401 ? 'service_locked'
+      : typeof record.message === 'string' ? 'service_answered_otherwise'
+      : 'request_failed';
     throw new BackendError(code, response.status, response.status >= 500 || response.status === 408);
   }
   return body as T;
@@ -101,6 +120,9 @@ export async function putUpload(signedUrl: string, blob: Blob) {
 const COPY: Record<string, string> = {
   network_error: 'The connection dropped. Your message may or may not have sent — pull to check before trying again.',
   invalid_response: 'The service replied with something unexpected. Try again in a moment.',
+  no_service: 'No room service is answering at {address}. The page is live, but its backend has not been connected yet — see SETUP.md, steps 1 to 3. Until that is done no room can be made or joined.',
+  service_locked: 'The room service refused the call for want of a login this page does not carry. In Supabase, open the app function and switch off "Enforce authentication" (SETUP.md, step 2.3).',
+  service_answered_otherwise: 'The room service answered with its own message instead of the app\'s, which usually means the address points at Supabase but not at the deployed function (it should end in /functions/v1/app).',
   not_a_member: 'This room link no longer matches. Rejoin with the code your partner has.',
   room_not_found: 'That room code does not exist yet.',
   invalid_code: 'That room code is not quite right.',
@@ -120,8 +142,10 @@ const COPY: Record<string, string> = {
 };
 
 export function explain(error: unknown): string {
-  const code = error instanceof BackendError ? error.code : '';
-  return COPY[code] ?? 'Something went wrong. Give it another try.';
+  if (!(error instanceof BackendError)) return 'Something went wrong. Give it another try.';
+  const copy = COPY[error.code] ?? 'Something went wrong. Give it another try.';
+  // A setup failure names the address it tried, because that is the only thing the owner can correct.
+  return error.hint ? copy.replace('{address}', error.hint) : copy;
 }
 
 export function isLocalPreview() {

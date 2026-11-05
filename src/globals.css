@@ -344,6 +344,8 @@ body::before {
   color: #b53a52;
   font-size: 13px;
   border: 1px solid #f7d5db;
+  /* Setup failures quote the full service address, which is one long unbroken token. */
+  overflow-wrap: anywhere;
 }
 
 .local-note {
