@@ -2,6 +2,8 @@
 
 A React, TypeScript, Vite and Tailwind frontend with a bundled Shadcn component catalog. Vite produces static files in `dist/`. Server behavior belongs in the optional Qoder Sites Function, not a Node or framework server.
 
+**This project is Our Little Cinema, and it currently ships to GitHub Pages plus a Supabase edge function. See [SETUP.md](SETUP.md) for the whole go-live path; the sections below are the starter's own notes and describe the optional Qoder Sites Function.**
+
 ## Develop
 
 Use a Node version accepted by `package.json` (`^22.13.0 || >=24.0.0`). Select an installed compatible runtime and keep it selected for installation, development and build:

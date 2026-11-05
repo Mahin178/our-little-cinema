@@ -1,0 +1,10 @@
+# Our Little Cinema — settings `supabase functions deploy` reads.
+project_id = 'our-little-cinema'
+
+[functions.app]
+# Switched off on purpose. The page lives on GitHub Pages and carries no Supabase key: every
+# call proves membership with the room's own signed token instead. Left on, the gateway would
+# answer 401 before this function ever ran, and the site would look dead.
+# If you create the function in the dashboard instead of the CLI, find the same switch under
+# the function's settings ("Enforce authentication" / JWT verification) and turn it off there.
+verify_jwt = false

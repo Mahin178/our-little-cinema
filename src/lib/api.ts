@@ -1,6 +1,39 @@
-// Same-origin Function client. Every call is a business route owned by the Function;
+// Every call is a business route owned by the Function;
 // the browser never sees a database endpoint or a credential.
-const BASE = '/functions/v1/app';
+//
+// Same-origin is the default (Qoder Sites serves the Function beside the pages). When the
+// site is hosted somewhere static-only, a config.json shipped next to index.html points the
+// same build at a Function on another origin — no rebuild, no hard-coded address.
+let BASE = '/functions/v1/app';
+let configured = false;
+
+export async function loadConfig(): Promise<{ apiBase: string; hasConfig: boolean }> {
+  if (configured) return { apiBase: BASE, hasConfig: true };
+  configured = true;
+  try {
+    const response = await fetch('./config.json', { cache: 'no-store' });
+    if (!response.ok) return { apiBase: BASE, hasConfig: false };
+    const raw = (await response.json()) as Record<string, unknown>;
+    const value = typeof raw.apiBase === 'string' ? raw.apiBase.trim().replace(/\/+$/, '') : '';
+    // Only an absolute http(s) address, so a stray relative path cannot silently 404 everything.
+    if (/^https?:\/\/[^\s]+$/i.test(value)) BASE = value;
+    return { apiBase: BASE, hasConfig: true };
+  } catch {
+    return { apiBase: BASE, hasConfig: false };
+  }
+}
+
+/** Cheap anonymous probe: tells the front door whether a room service is answering at all. */
+export async function serviceReachable(): Promise<boolean> {
+  try {
+    await request<{ ok: boolean }>('/api/health', { method: 'GET' }, 6_000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const apiBase = () => BASE;
 
 export class BackendError extends Error {
   constructor(public code: string, public status = 0, public uncertain = false) {

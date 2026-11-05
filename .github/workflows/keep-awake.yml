@@ -1,0 +1,23 @@
+name: Keep the room service awake
+
+# A free Supabase project sleeps after a week without traffic, and a sleeping service means
+# the page opens but nobody can join. One health call an hour keeps it warm: the health route
+# makes a tiny database read, so the call counts as real activity.
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    if: ${{ vars.SUPABASE_FUNCTIONS_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Wake the function
+        env:
+          URL: ${{ vars.SUPABASE_FUNCTIONS_URL }}
+        run: |
+          echo "GET ${URL}/api/health"
+          curl --silent --show-error --max-time 25 "${URL}/api/health" || echo "Not reachable this hour; the next run will try again."
+          echo

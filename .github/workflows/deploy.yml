@@ -1,0 +1,62 @@
+name: Build and publish the site
+
+# Every push to main builds the site and publishes it to GitHub Pages.
+# The job also runs the type check, so a broken build never reaches the live page.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The deploy folder carries a generated copy of the app's routes; this refuses to build
+      # a site whose backend copy has drifted from functions/routes.mjs.
+      - name: Keep the edge function copies in step
+        run: node scripts/sync-function.mjs --check
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check and build
+        run: npm run build
+
+      # Repository variable → dist/config.json, so the page knows which room service to call.
+      # Leave it unset and the front door honestly reports that no service is connected.
+      - name: Point the page at its room service
+        env:
+          SUPABASE_FUNCTIONS_URL: ${{ vars.SUPABASE_FUNCTIONS_URL }}
+        run: node scripts/point-service.mjs dist/config.json
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.publish.outputs.page_url }}
+    steps:
+      - id: publish
+        uses: actions/deploy-pages@v4

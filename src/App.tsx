@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Toaster } from 'sonner';
 import Join from '@/src/components/Join';
 import Room from '@/src/components/Room';
-import { BackendError } from '@/src/lib/api';
+import { BackendError, loadConfig, serviceReachable } from '@/src/lib/api';
 import { call } from '@/src/lib/call';
 import { runtime } from '@/src/lib/runtime';
 
@@ -11,38 +11,48 @@ let resumed = false;
 
 export default function App() {
   const [screen, setScreen] = useState<'boot' | 'join' | 'room'>('boot');
+  const [serviceDown, setServiceDown] = useState(false);
 
   useEffect(() => {
     if (resumed) return;
     resumed = true;
-    const saved = runtime.load();
-    const invite = (new URLSearchParams(window.location.search).get('r') ?? '').trim().toLowerCase();
-    if (!saved) {
-      setScreen('join');
-      return;
+
+    async function boot() {
+      // Where the room service answers: same-origin unless a config.json says otherwise.
+      await loadConfig();
+      const saved = runtime.load();
+      const invite = (new URLSearchParams(window.location.search).get('r') ?? '').trim().toLowerCase();
+      if (!saved) {
+        // Nobody is seated yet, so a failed probe is worth saying out loud.
+        setServiceDown(!(await serviceReachable()));
+        setScreen('join');
+        return;
+      }
+      call.watch();
+      // Quietly take the same seat again; if the room is gone, the front door reopens.
+      void runtime
+        .enter({ name: runtime.identity.name, color: runtime.identity.color, code: saved.code, known: saved })
+        .then(() => setScreen('room'))
+        .catch(error => {
+          const gone = error instanceof BackendError && (error.code === 'room_not_found' || error.code === 'not_a_member');
+          if (gone) {
+            runtime.forget();
+            setScreen('join');
+            return;
+          }
+          // Offline is not a lost room: the live loop keeps retrying on its own.
+          setScreen('room');
+        });
     }
-    call.watch();
-    // Quietly take the same seat again; if the room is gone, the front door reopens.
-    void runtime
-      .enter({ name: runtime.identity.name, color: runtime.identity.color, code: saved.code, known: saved })
-      .then(() => setScreen('room'))
-      .catch(error => {
-        const gone = error instanceof BackendError && (error.code === 'room_not_found' || error.code === 'not_a_member');
-        if (gone) {
-          runtime.forget();
-          setScreen('join');
-          return;
-        }
-        // Offline is not a lost room: the live loop keeps retrying on its own.
-        setScreen('room');
-      });
+
+    void boot();
   }, []);
 
   const invite = (new URLSearchParams(window.location.search).get('r') ?? '').trim().toLowerCase();
 
   return (
     <>
-      {screen === 'join' && <Join known={null} invite={invite} onEnter={() => setScreen('room')} />}
+      {screen === 'join' && <Join known={null} invite={invite} serviceDown={serviceDown} onEnter={() => setScreen('room')} />}
       {screen === 'room' && <Room onLeave={() => setScreen('join')} />}
       {screen === 'boot' && (
         <main className="join-wrap">

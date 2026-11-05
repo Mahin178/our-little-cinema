@@ -191,6 +191,33 @@ check('voice upload signed', badVoiceKind.status === 201);
 const oversized = await call('/api/upload/begin', { method: 'POST', body: { ...hostSession, kind: 'image', mime: 'image/png', bytes: 40 * 1024 * 1024 } });
 check('oversized declared bytes rejected', oversized.status === 413);
 
+// Relayed uploads: the same routes when object storage cannot sign a URL for the browser.
+console.log('\nrelayed uploads');
+backend.runtime.storage.relayUploads = true;
+const relay = await call('/api/upload/begin', { method: 'POST', body: { ...hostSession, kind: 'image', mime: 'image/png', bytes: bytes.length } });
+const relayUrl = new URL(relay.json.signedUrl, base);
+check('relay mode returns an app route, not a store path', relay.status === 201 && relayUrl.pathname.endsWith('/api/upload/put') && !relayUrl.search.includes('object'), relay.json.signedUrl);
+check('relay url carries no object path', !relayUrl.search.includes('cinema/'));
+const relayBad = await fetch(relayUrl, { method: 'PUT', headers: { 'content-type': 'text/plain' }, body: bytes });
+check('relay refuses a type that was not declared', relayBad.status === 415, String(relayBad.status));
+const relayPut = await fetch(relayUrl, { method: 'PUT', headers: { 'content-type': 'image/png' }, body: bytes });
+check('relayed bytes stored', relayPut.status === 201, String(relayPut.status));
+const relayRow = backend.runtime.tables.cine_media.find(row => row.id === relay.json.id);
+check('relayed object is ready under a server-named path', relayRow?.status === 'ready' && relayRow.object_path === `cinema/${code}/${relay.json.id}`);
+const relayAgain = await fetch(relayUrl, { method: 'PUT', headers: { 'content-type': 'image/png' }, body: bytes });
+check('a finished upload is not overwritten', relayAgain.status === 409, String(relayAgain.status));
+const relayConfirm = await call('/api/media?id=' + relay.json.id + '&op=complete&code=' + code + '&peer=' + hostSession.peer + '&token=' + hostSession.token, { method: 'POST' });
+check('complete short-circuits on the ready row', relayConfirm.status === 200 && relayConfirm.json.bytes === bytes.length);
+const bareRelay = await fetch(new URL('/functions/v1/app/api/upload/put?id=' + relay.json.id, base), { method: 'PUT', headers: { 'content-type': 'image/png' }, body: bytes });
+check('relay requires membership', bareRelay.status === 403, String(bareRelay.status));
+backend.runtime.storage.maxUploadBytes = 1024;
+const relayCeiling = await call('/api/upload/begin', { method: 'POST', body: { ...hostSession, kind: 'image', mime: 'image/png', bytes: 4000 } });
+check('the store ceiling answers before any bytes move', relayCeiling.status === 413);
+const underCeiling = await call('/api/upload/begin', { method: 'POST', body: { ...hostSession, kind: 'image', mime: 'image/png', bytes: bytes.length } });
+check('uploads under the ceiling still sign', underCeiling.status === 201);
+backend.runtime.storage.maxUploadBytes = Infinity;
+backend.runtime.storage.relayUploads = false;
+
 const attached = await call('/api/send', { method: 'POST', body: { ...hostSession, id: uuid(), kind: 'image', body: '', media: mediaId } });
 check('ready media attaches', attached.status === 201 && attached.json.media === mediaId);
 

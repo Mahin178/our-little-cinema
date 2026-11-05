@@ -6,7 +6,7 @@ import type { Session } from '@/src/lib/types';
 // The first swatch matches the runtime default, so a first visit is never unselected.
 const COLORS = ['#ff8fb1', '#a78bfa', '#7fd8c4', '#ffc978', '#ff9a76', '#8ab6ff'];
 
-export default function Join({ known, invite, onEnter }: { known: Session | null; invite: string; onEnter?: () => void }) {
+export default function Join({ known, invite, serviceDown, onEnter }: { known: Session | null; invite: string; serviceDown?: boolean; onEnter?: () => void }) {
   const [name, setName] = useState(runtime.identity.name || '');
   const [color, setColor] = useState(runtime.identity.color || COLORS[0]);
   const [code, setCode] = useState(invite);
@@ -44,6 +44,15 @@ export default function Join({ known, invite, onEnter }: { known: Session | null
         </div>
         <h1 className="join-title">Our Little Cinema</h1>
         <p className="join-sub">A tiny private room where the two of you press play at the same time, even when the miles say otherwise.</p>
+
+        {serviceDown && (
+          <p className="join-warn" role="status">
+            This copy of the cinema is not reaching its room service yet, so joining will not work.
+            {isLocalPreview()
+              ? ' Start it with npm run dev, which brings the local service up beside the page.'
+              : ' If this site was deployed on its own, its owner still needs to connect the backend.'}
+          </p>
+        )}
 
         <label className="field-label" htmlFor="join-name">What should they see you as?</label>
         <input

@@ -444,6 +444,18 @@ body::before {
   color: var(--ink-soft);
 }
 
+.join-warn {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid #f7dfb8;
+  background: #fff8ec;
+  color: #8a6a3a;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: left;
+}
+
 .join-foot {
   margin: 20px 0 0;
   text-align: center;

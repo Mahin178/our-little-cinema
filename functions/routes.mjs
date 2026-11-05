@@ -7,8 +7,9 @@
 const CODE = /^[a-z0-9]{8,12}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // The Gateway preserves the suffix but replaces the logical `app` segment with the
-// physical Function name, so the route must not assume either spelling.
-const ROUTE = /^\/(?:functions\/v1\/)?(?:app|app-d[0-9a-f]{32})(\/.*)?$/;
+// physical Function name, so the route must not assume either spelling. On a host that mounts
+// the function by path prefix and hands the isolate only `/api/...`, the prefix is simply absent.
+const ROUTE = /^\/(?:(?:functions\/v1\/)?(?:app|app-d[0-9a-f]{32}))?(\/.*)?$/;
 const VIDEO_ID = /^[0-9A-Za-z_-]{11}$/;
 const HEX_COLOR = /^#[0-9a-f]{6}$/;
 // A reaction is one emoji: base glyph plus an optional variation selector, skin tone,
@@ -33,7 +34,7 @@ const MAX_MS = 41024454496000;
 
 const base64url = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-export function application({ db, storage, BackendError }) {
+export function application({ db, storage, BackendError, publicBase = null }) {
   const fail = (code, status) => { throw new BackendError(code, status); };
   const rows = result => {
     if (result?.error) fail(result.error.code ?? 'database_error', 503);
@@ -44,12 +45,11 @@ export function application({ db, storage, BackendError }) {
   const int = (value, min, max) => (Number.isFinite(value) && Math.trunc(value) === value && value >= min && value <= max ? value : null);
   const peerId = value => (typeof value === 'string' && UUID.test(value) ? value : null);
 
-  async function body(request, maxBytes) {
-    if (!request.headers.get('content-type')?.startsWith('application/json')) fail('invalid_input', 400);
-    const declared = Number(request.headers.get('content-length') ?? 0);
-    if (declared > maxBytes) fail('payload_too_large', 413);
+  // Bounded stream reader. Content-Length is optional and can be wrong, so the bytes
+  // actually read decide whether a body is acceptable — for JSON and for upload bytes.
+  async function readBytes(request, maxBytes, failure = 'invalid_input', failureStatus = 400) {
     const reader = request.body?.getReader();
-    if (!reader) fail('invalid_input', 400);
+    if (!reader) fail(failure, failureStatus);
     let size = 0;
     const chunks = [];
     try {
@@ -57,19 +57,26 @@ export function application({ db, storage, BackendError }) {
         const { done, value } = await reader.read();
         if (done) break;
         size += value?.byteLength ?? 0;
-        // Content-Length is optional and can be wrong, so bound the bytes actually read.
         if (size > maxBytes) { await reader.cancel().catch(() => {}); fail('payload_too_large', 413); }
         chunks.push(value);
       }
     } catch (error) {
       if (error instanceof BackendError) throw error;
-      fail('invalid_input', 400);
+      fail(failure, failureStatus);
     } finally {
       reader.releaseLock();
     }
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return bytes;
+  }
+
+  async function body(request, maxBytes) {
+    if (!request.headers.get('content-type')?.startsWith('application/json')) fail('invalid_input', 400);
+    const declared = Number(request.headers.get('content-length') ?? 0);
+    if (declared > maxBytes) fail('payload_too_large', 413);
+    const bytes = await readBytes(request, maxBytes);
     let parsed;
     try { parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); }
     catch { fail('invalid_input', 400); }
@@ -293,6 +300,15 @@ export function application({ db, storage, BackendError }) {
   }
 
   // ---------- uploads: sign, then verify the stored bytes before marking ready ----------
+  // The Function's own address, so a relayed upload points back at this same deployment.
+  // A host that hands the isolate an internal URL (a loopback origin inside the container)
+  // has to supply the public one; otherwise the request it is answering says it best.
+  function appBase(request, route) {
+    if (publicBase) return String(publicBase).replace(/\/+$/, '');
+    const url = new URL(request.url);
+    return url.pathname.endsWith(route) ? `${url.origin}${url.pathname.slice(0, -route.length)}` : url.origin;
+  }
+
   async function uploadBegin(request) {
     const payload = await body(request, 4_000);
     const scope = await member(credentials(payload));
@@ -300,14 +316,51 @@ export function application({ db, storage, BackendError }) {
     const mime = typeof payload.mime === 'string' ? payload.mime.toLowerCase().split(';')[0].trim() : '';
     const allowed = kind === 'image' ? IMAGE_TYPES[mime] : VOICE_TYPES.some(value => mime.startsWith(value));
     if (!allowed) fail('unsupported_file', 415);
-    const size = int(payload.bytes, 1, kind === 'image' ? IMAGE_BYTES : VOICE_BYTES);
+    // An object store that cannot hand out browser URLs without a key of its own sets a
+    // ceiling here; nothing bigger than that ever leaves the phone.
+    const ceiling = Math.min(kind === 'image' ? IMAGE_BYTES : VOICE_BYTES, storage.maxUploadBytes ?? Infinity);
+    const size = int(payload.bytes, 1, ceiling);
     if (!size) fail('file_too_large', 413);
     const id = crypto.randomUUID();
     // The client cannot choose a path, so it can never overwrite another member's file.
     const objectPath = `cinema/${scope.code}/${id}`;
     rows(await db.from('cine_media').insert({ id, room: scope.code, peer: scope.peer, object_path: objectPath, mime, bytes: size, kind, status: 'pending', created_at: new Date().toISOString() }));
+    if (storage.relayUploads) {
+      const back = new URLSearchParams({ id, ...credentials(payload) });
+      return json({ id, signedUrl: `${appBase(request, '/api/upload/begin')}/api/upload/put?${back}` }, 201);
+    }
     const signed = await storage.createSignedUploadUrl(objectPath, { upsert: false });
     return json({ id, ...signed }, 201);
+  }
+
+  // Relayed upload: the browser PUTs the bytes to this Function, which writes them with its
+  // own server-side credential. Used when object storage would otherwise need a key in the
+  // page — the client still never holds one, and it still cannot name the object path.
+  async function uploadPut(url, request) {
+    const scope = await member(query(url));
+    const id = url.searchParams.get('id') ?? '';
+    if (!UUID.test(id)) fail('invalid_input', 400);
+    const found = rows(await db.from('cine_media').select('id,object_path,status,mime,bytes,kind').eq('id', id).eq('room', scope.code).limit(1));
+    if (!found?.length) fail('not_found', 404);
+    const file = found[0];
+    // One object, one attempt: a finished upload is never silently overwritten.
+    if (file.status !== 'pending') fail('write_conflict', 409);
+    const declared = request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() ?? '';
+    const allowed = file.kind === 'image' ? IMAGE_TYPES[declared] : VOICE_TYPES.some(value => declared.startsWith(value));
+    if (!allowed) fail('unsupported_file', 415);
+    const ceiling = Math.min(file.kind === 'image' ? IMAGE_BYTES : VOICE_BYTES, storage.maxUploadBytes ?? Infinity);
+    const bytes = await readBytes(request, ceiling, 'invalid_upload', 422);
+    if (!bytes.byteLength || bytes.byteLength > ceiling) fail('invalid_upload', 422);
+    try {
+      await storage.upload(file.object_path, bytes, { contentType: declared });
+    } catch (error) {
+      if (error instanceof BackendError) throw error;
+      fail('storage_unavailable', 503);
+    }
+    // These bytes were read and written here, so they need no second download to trust;
+    // /api/media's `complete` short-circuits on the ready row the client already knows about.
+    rows(await db.from('cine_media').update({ status: 'ready', mime: declared, bytes: bytes.byteLength }).eq('id', file.id).eq('room', scope.code).eq('status', 'pending'));
+    return json({ id: file.id, status: 'ready', mime: declared, bytes: bytes.byteLength }, 201);
   }
 
   async function uploadFinish(url, request) {
@@ -368,7 +421,14 @@ export function application({ db, storage, BackendError }) {
     if (!match) fail('not_found', 404);
     const path = match[1] || '/';
     const url = new URL(request.url);
-    if (path === '/api/health' && request.method === 'GET') return json({ ok: true, now: Date.now() });
+    if (path === '/api/health' && request.method === 'GET') {
+      // A free hosting plan sleeps a database nobody visited this week, so the health probe
+      // also touches one table. It still answers when the read fails: the page only needs to
+      // know whether a service is listening, and a scheduled ping keeps Postgres warm either way.
+      try { rows(await db.from('cine_rooms').select('code').limit(1)); } catch { /* still reporting */ }
+      return json({ ok: true, now: Date.now() });
+    }
+    if (path === '/api/upload/put' && request.method === 'PUT') return uploadPut(url, request);
     if (path === '/api/enter' && request.method === 'POST') return enter(await body(request, 4_000));
     if (request.method !== 'GET' && request.method !== 'POST') fail('method_not_allowed', 405);
     if (path === '/api/pull' && request.method === 'GET') return pull(url);

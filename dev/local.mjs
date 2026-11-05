@@ -107,8 +107,18 @@ export function createMemoryRuntime() {
   }
 
   const storage = {
+    // The real adapter signs a URL the browser PUTs to directly. Flipping this flag on makes
+    // the routes relay bytes through the Function instead, which is what a deployment whose
+    // object store needs a key in the page has to do — the fixture can exercise both.
+    relayUploads: false,
+    maxUploadBytes: Infinity,
     async createSignedUploadUrl(path) { return sign(path, 'upload'); },
     async createSignedUrl(path) { return sign(path, 'download'); },
+    async upload(path, bytes, options = {}) {
+      if (objects.has(path)) throw new LocalError('object_exists', 409);
+      objects.set(path, { bytes, type: options.contentType ?? 'application/octet-stream' });
+      return { ok: true };
+    },
     async download(path) {
       const object = objects.get(path);
       if (!object) throw new LocalError('storage_object_not_found', 404);
